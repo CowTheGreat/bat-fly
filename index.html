@@ -82,9 +82,9 @@
       <div id="modeToggle"><button class="secondary" id="modeBtn" style="font-size:12px;padding:6px 10px">Mode: Survival</button></div>
       <div id="center"><div id="card">
         <h1>Bat vs Fly — Survival 🦇</h1>
-        <p><b>One fly mutates into a bat.</b> 12 flies remain. The bat's <em>real 668-neuron brain</em> (FlyWire) drives it — you watch its brain on the right.</p>
-        <p style="font-size:13px;opacity:0.9">Bat must eat <b>all 12 flies</b> in <b>60 seconds</b>. Each fly gives <b>+10s stamina</b>. Stamina drains constantly — starve and you lose.</p>
-        <p style="font-size:12px;opacity:0.7">Prey flee from the bat. The bat hunts via looming + DNa steering. Right panel = live bat brain.</p>
+        <p><b>One fly mutates into a bat.</b> Flies spawn infinitely from <span style="color:#2563eb;font-weight:700">3× 💧 WATER</span> — 12 at start.</p>
+        <p style="font-size:13px;opacity:0.9">Hunt forever — each fly <b>+10s stamina</b>, 60s, infinite spawns. Flies hide in <span style="color:#2d6a4f">🌿 bushes</span> (3→trampled 8s) + scent, bat sonar searches.</p>
+        <p style="font-size:12px;opacity:0.7">Bat brain + sonar hunts, checks bushes when no prey visible, follows pheromone. White arena = high contrast.</p>
         <button id="play">Transform &amp; Hunt</button>
         <p style="margin-top:10px;font-size:11px;opacity:.6">Data: FlyWire CC BY-NC 4.0, MaleCNS CC BY 4.0 · Code MIT · Brain: LIF 1kHz, 668 neurons</p>
       </div></div>
@@ -119,7 +119,9 @@
           <span><i style="background:#8a8a8a"></i>other</span>
           <span><i style="background:#fff;box-shadow:0 0 6px #fff"></i>spike</span>
         </div>
-        <p style="font-size:11px;opacity:0.6;margin-top:8px">Movement decoded from <code>rateDNaL/R</code>, <code>rateFwd</code>, <code>GF latch</code>. Loom = distance to prey. VNC not shown.</p>
+        <p style="font-size:11px;opacity:0.6;margin-top:8px">Movement decoded from <code>rateDNaL/R</code>, <code>rateFwd</code>, <code>GF latch</code>. Click brain to stimulate. Bushes destruct after 3 hides (8s regrow), leave pheromone scent. Sonar pings when searching.</p>
+        <canvas id="miniMap" width="332" height="120" style="width:100%;height:120px;background:#ffffff;border:1px solid #1e2a44;border-radius:8px;margin-top:10px;display:block"></canvas>
+        <div style="font-size:10px;opacity:0.6;margin-top:4px;text-align:center">Mini-map — green bushes, brown trampled, yellow hidden flies</div>
       </div>
     </div>
   </div>

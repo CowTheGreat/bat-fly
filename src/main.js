@@ -66,9 +66,9 @@ window.addEventListener('resize', resize); resize();
 function makeCreature(isBat){
   const m = buildFlyModel();
   const g = m.root;
-  // scale
-  const s = isBat ? 1.45 : 0.88;
-  g.scale.set(s*1.15, s*1.15, s*1.15); // buildFlyModel already has FLY_SCALE 1.15, so multiply
+  // scale — bat a little larger as requested
+  const s = isBat ? 1.78 : 0.88;
+  g.scale.set(s*1.15, s*1.15, s*1.15);
   // recolor for bat
   if(isBat){
     g.traverse(o=>{
@@ -87,8 +87,8 @@ function makeCreature(isBat){
         }
       }
     });
-    // enlarge wings slightly for bat
-    m.foldedWings.scale.set(1.25,1.25,1.25);
+    // enlarge wings for larger bat
+    m.foldedWings.scale.set(1.38,1.38,1.38);
     // bat ears: small cones
     const earGeo = new THREE.ConeGeometry(2.2,5,8);
     const earMat = new THREE.MeshStandardMaterial({color:0x1a0f2e});
@@ -146,18 +146,37 @@ function roleColor(i){
 const neuronColors = Array.from({length:n}, (_,i)=>roleColor(i));
 const lastSpike = new Float64Array(n); lastSpike.fill(-1e9);
 let totalSpikesSeen = 0;
+// brain click → optogenetic stimulation (steer bat via brain)
+brainCanvas.addEventListener('click', e=>{
+  const rect=brainCanvas.getBoundingClientRect();
+  const x=(e.clientX-rect.left)/rect.width, y=1-(e.clientY-rect.top)/rect.height;
+  // map click to neuron positions near click — stimulate ~18 nearby neurons
+  const cx=minX + x*rangeX, cy=minY + y*rangeY;
+  const nearby=[];
+  for(let i=0;i<n;i++){
+    const px=sim.positions[3*i], py=sim.positions[3*i+1];
+    const d=Math.hypot(px-cx, py-cy);
+    if(d<0.9) nearby.push(i);
+    if(nearby.length>22) break;
+  }
+  if(nearby.length){ sim.stimulate(nearby, 0.45, 120); spawnParticles(bat.x,bat.y,0x6ea8fe,8); playSound('flush'); }
+});
 
 // Game state
 let mode = 'survival'; // 'survival' | 'whack'
 const NUM_PREY = 12, TOTAL_TIME = 60, STAMINA_MAX = 10;
 const BAT_INITIAL_STAMINA = 10;
 const BUSH_COUNT = 5, BUSH_RADIUS = 52;
+const WATER_COUNT = 3, WATER_RADIUS = 62;
 let bat = { x:0,y:0,vx:0,vy:0,heading:0,wingPhase:0, speed:0 };
 let prey = []; // {x,y,vx,vy,heading,wingPhase,alive,hidden,hideTimer,bushIdx}
 let batMesh, preyMeshes=[];
-let bushes = []; // {x,y,radius, group, foliage:[]}
+let bushes = [];
 let bushMeshes = [];
+let waters = []; // 3 water bodies {x,y,radius, group}
+let waterSpawnTimer=0, totalSpawned=0;
 let score=0, eaten=0, timeLeft=TOTAL_TIME, stamina=STAMINA_MAX, playing=false, last=performance.now();
+let sonarTimer=0;
 let hits=0, hitsNeeded=10, level=1; // for whack mode
 let mouse = {x:0,y:0, px:0,py:0, vx:0, vy:0};
 let diff = { label:'easy', tempo:1, loomGainScale:1, pNoiseScale:1, speed:80 };
@@ -170,33 +189,93 @@ function applyDiff(){ diff=difficultyFor(level); }
 
 function resetWhackFly(f){ f.x=(Math.random()*0.6-0.3)*(camera.right-camera.left); f.y=(Math.random()*0.6-0.3)*(camera.top-camera.bottom); f.vx=(Math.random()<0.5?1:-1)*diff.speed*0.6; f.vy=(Math.random()<0.5?1:-1)*diff.speed*0.6; }
 
+let particles=[], sonarRings=[], pheromones=[];
+const audioCtx = (window.AudioContext||window.webkitAudioContext) ? new (window.AudioContext||window.webkitAudioContext)() : null;
+function playSound(type){
+  if(!audioCtx) return;
+  const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+  o.connect(g); g.connect(audioCtx.destination);
+  if(type==='eat'){ o.frequency.value=880; g.gain.value=0.12; o.detune.value=200; g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime+0.22); o.start(); o.stop(audioCtx.currentTime+0.22);
+  } else if(type==='rustle'){ o.frequency.value=220; g.gain.value=0.08; o.type='square'; g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime+0.18); o.start(); o.stop(audioCtx.currentTime+0.18);
+  } else if(type==='sonar'){ o.frequency.value=1200; g.gain.value=0.06; o.frequency.exponentialRampToValueAtTime(220, audioCtx.currentTime+0.32); g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime+0.32); o.start(); o.stop(audioCtx.currentTime+0.32); }
+  else if(type==='flush'){ o.frequency.value=440; g.gain.value=0.07; o.frequency.linearRampToValueAtTime(660, audioCtx.currentTime+0.12); g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime+0.14); o.start(); o.stop(audioCtx.currentTime+0.14); }
+}
+function spawnParticles(x,y, color=0x33ff88, n=12){
+  for(let i=0;i<n;i++){
+    const m=new THREE.Mesh(new THREE.SphereGeometry(2.2+Math.random()*1.5,6,6), new THREE.MeshBasicMaterial({color, transparent:true, opacity:0.95}));
+    m.position.set(x,y,2);
+    const ang=Math.random()*Math.PI*2, spd=80+Math.random()*140;
+    scene.add(m);
+    particles.push({mesh:m, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd, life:0.42+Math.random()*0.25, age:0});
+  }
+}
+function spawnSonar(x,y){
+  const g=new THREE.Mesh(new THREE.RingGeometry(6,8,32), new THREE.MeshBasicMaterial({color:0x6ea8fe, transparent:true, opacity:0.55, side:THREE.DoubleSide}));
+  g.position.set(x,y,0.5); g.rotation.x=-Math.PI/2;
+  scene.add(g);
+  sonarRings.push({mesh:g, age:0, life:0.55});
+  playSound('sonar');
+}
+function addPheromone(x,y){
+  pheromones.push({x,y, strength:1.0, age:0});
+  if(pheromones.length>24) pheromones.shift();
+}
 function makeBush(x,y,r){
   const g=new THREE.Group();
-  // trunk
   const trunk=new THREE.Mesh(new THREE.CylinderGeometry(5,7,14,8), new THREE.MeshStandardMaterial({color:0x5c3a21, roughness:0.9}));
   trunk.position.set(0,0,-6); trunk.rotation.x=Math.PI/2;
   g.add(trunk);
-  // foliage — 3 overlapping spheres + smaller tufts, green on white bg highly visible
   const greens=[0x2d6a4f,0x3a9d23,0x40916c,0x2b7a3b];
   const offsets=[[0,0],[ -14,8],[14,7],[0,14],[-10,-10],[10,-9]];
   const scales=[1,0.85,0.82,0.75,0.7,0.65];
+  const foliage=[];
   for(let i=0;i<offsets.length;i++){
     const s=new THREE.Mesh(new THREE.SphereGeometry(r*0.62*scales[i],14,10), new THREE.MeshStandardMaterial({color:greens[i%greens.length], roughness:0.85}));
     s.position.set(offsets[i][0]*0.45, offsets[i][1]*0.45, 3 + Math.random()*2);
     s.scale.set(1,1,0.55);
-    g.add(s);
+    s.userData.baseColor=s.material.color.clone();
+    g.add(s); foliage.push(s);
   }
-  // rim highlight
   const rim=new THREE.Mesh(new THREE.RingGeometry(r*0.95, r*1.05, 24), new THREE.MeshBasicMaterial({color:0x95d5b2, transparent:true, opacity:0.25, side:THREE.DoubleSide}));
   rim.position.set(0,0,0.1);
   g.add(rim);
   g.position.set(x,y, -0.5);
   scene.add(g);
-  return {x,y,radius:r, group:g};
+  return {x,y,radius:r, group:g, foliage, rim, uses:0, trampled:false, regrow:0, pheromone:0};
 }
+function makeWater(x,y,r=68){
+  const g=new THREE.Group();
+  const base=new THREE.Mesh(new THREE.CylinderGeometry(r,r,2,32), new THREE.MeshStandardMaterial({color:0x3b82f6, roughness:0.45, metalness:0.1, transparent:true, opacity:0.92}));
+  base.rotation.x=Math.PI/2; base.position.set(0,0,0);
+  g.add(base);
+  const inner=new THREE.Mesh(new THREE.CylinderGeometry(r*0.72, r*0.72,2.4,24), new THREE.MeshStandardMaterial({color:0x60a5fa, roughness:0.5, transparent:true, opacity:0.55}));
+  inner.rotation.x=Math.PI/2; inner.position.set(0,0,0.4);
+  g.add(inner);
+  const ring=new THREE.Mesh(new THREE.RingGeometry(r*1.02, r*1.12, 28), new THREE.MeshBasicMaterial({color:0x93c5fd, transparent:true, opacity:0.35, side:THREE.DoubleSide}));
+  ring.position.set(0,0,0.6);
+  g.add(ring);
+  // lily pads
+  for(let i=0;i<3;i++){
+    const pad=new THREE.Mesh(new THREE.CircleGeometry(9+Math.random()*4,12), new THREE.MeshStandardMaterial({color:0x2d6a4f}));
+    const ang=i*2.1, rad=r*0.45;
+    pad.position.set(Math.cos(ang)*rad, Math.sin(ang)*rad, 0.8);
+    g.add(pad);
+  }
+  g.position.set(x,y,-1.2);
+  scene.add(g);
+  return {x,y,radius:r, group:g, ring, base};
+}
+function clearWaters(){
+  for(const w of waters) scene.remove(w.group);
+  waters=[];
+}
+function clearWater(){ clearWaters(); } // alias
 function clearBushes(){
   for(const b of bushMeshes) scene.remove(b.group);
   bushMeshes=[]; bushes=[];
+  for(const ph of pheromones) if(ph.mesh) scene.remove(ph.mesh);
+  pheromones=[]; particles.forEach(p=>scene.remove(p.mesh)); particles=[];
+  sonarRings.forEach(s=>scene.remove(s.mesh)); sonarRings=[];
 }
 function spawnBushes(){
   clearBushes();
@@ -208,27 +287,95 @@ function spawnBushes(){
       x= (Math.random()*0.8-0.4)*(R-L) *0.5;
       y= (Math.random()*0.8-0.4)*(T-B) *0.5;
       tries++;
-      // avoid stacking bushes too close
       if(bushes.every(b=> Math.hypot(b.x-x,b.y-y) > BUSH_RADIUS*2.2)) break;
     }while(tries<40);
     const b=makeBush(x,y,BUSH_RADIUS);
     bushes.push(b); bushMeshes.push(b);
   }
 }
+function spawnWaters(){
+  clearWaters();
+  // 3 waters spread: left-bottom, center-bottom, right-bottom + slight variance, avoid bushes
+  const spots=[
+    {fx:-0.32, fy:0.82}, {fx:0.02, fy:0.78}, {fx:0.30, fy:0.85}
+  ];
+  for(const s of spots){
+    let x,y,tries=0;
+    do{
+      x = s.fx*(camera.right-camera.left) + (Math.random()-0.5)*60;
+      y = camera.bottom + 92 + s.fy*22 + Math.random()*18;
+      tries++;
+      if(bushes.every(b=> Math.hypot(b.x-x,b.y-y) > BUSH_RADIUS + 62) && waters.every(w=> Math.hypot(w.x-x,w.y-y) > WATER_RADIUS*1.9)) break;
+    }while(tries<35);
+    const w=makeWater(x,y,WATER_RADIUS);
+    waters.push(w);
+  }
+}
+function spawnWater(){ spawnWaters(); } // alias
+function spawnFlyFromWater(){
+  if(!waters.length) return;
+  const water=waters[Math.floor(Math.random()*waters.length)];
+  const ang=Math.random()*Math.PI*2, rad=water.radius*0.55 + Math.random()*10;
+  const x=water.x + Math.cos(ang)*rad, y=water.y + Math.sin(ang)*rad;
+  const m=makeCreature(false);
+  m.group.position.set(x,y,0);
+  const heading=Math.random()*Math.PI*2;
+  spawnParticles(x,y,0x60a5fa,7);
+  const p={x,y,vx:0,vy:0,heading,wingPhase:Math.random()*6, alive:true, hidden:false, hideTimer:0, bushIdx:-1, spawned:true};
+  prey.push(p); preyMeshes.push(m);
+  totalSpawned++;
+  playSound('rustle');
+}
+function updateBushes(dt){
+  for(const b of bushes){
+    if(b.trampled){
+      b.regrow -= dt;
+      if(b.regrow<=0){
+        b.trampled=false; b.uses=0;
+        b.foliage.forEach(s=>{ s.material.color.copy(s.userData.baseColor); s.material.opacity=1; });
+        b.rim.material.opacity=0.25; b.rim.material.color.setHex(0x95d5b2);
+        b.group.scale.set(0.6,0.6,1); // regrow pop
+        // animate back to 1
+        let t=0; const grow=()=>{ t+=0.04; b.group.scale.set(0.6+t*0.4,0.6+t*0.4,1); if(t<1) requestAnimationFrame(grow); };
+        grow();
+      }
+    }
+    // pheromone decay + visual dust
+    if(b.pheromone>0){ b.pheromone=Math.max(0,b.pheromone - dt*0.35); b.rim.material.opacity=0.25 + b.pheromone*0.35; }
+  }
+  // particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i]; p.age+=dt; p.mesh.position.x+=p.vx*dt; p.mesh.position.y+=p.vy*dt; p.mesh.position.z+=12*dt; p.mesh.material.opacity=1-p.age/p.life; p.vx*=0.96; p.vy*=0.96;
+    if(p.age>=p.life){ scene.remove(p.mesh); particles.splice(i,1); }
+  }
+  for(let i=sonarRings.length-1;i>=0;i--){
+    const s=sonarRings[i]; s.age+=dt; const sc=1+s.age*180; s.mesh.scale.set(sc,sc,1); s.mesh.material.opacity=0.55*(1-s.age/s.life);
+    if(s.age>=s.life){ scene.remove(s.mesh); sonarRings.splice(i,1); }
+  }
+  // pheromone global decay
+  for(let i=pheromones.length-1;i>=0;i--){ pheromones[i].age+=dt; pheromones[i].strength=Math.max(0,1-pheromones[i].age/4.5); if(pheromones[i].strength<=0) pheromones.splice(i,1); }
+}
+function trampleBush(b){
+  b.uses++; if(b.uses>=3){ b.trampled=true; b.regrow=8; b.foliage.forEach(s=>{ s.material.color.setHex(0x8b7355); }); b.rim.material.color.setHex(0x8b7355); b.rim.material.opacity=0.15; spawnParticles(b.x,b.y,0x8b7355,14); playSound('rustle'); }
+}
 // survival setup
 function clearCreatures(){
   for(const m of preyMeshes) scene.remove(m.group);
   if(batMesh) scene.remove(batMesh.group);
   preyMeshes=[]; batMesh=null; prey=[];
+  clearWater();
+  waterSpawnTimer=0;
 }
 function spawnSurvival(){
   clearCreatures();
   spawnBushes();
+  spawnWater();
   batMesh = makeCreature(true);
   bat = { x:(Math.random()-0.5)*100, y:(Math.random()-0.5)*100, vx:0, vy:0, heading: Math.random()*Math.PI*2, wingPhase:0, speed:0 };
   batMesh.group.position.set(bat.x,bat.y,0);
   prey=[];
   preyMeshes=[];
+  totalSpawned=0;
   for(let i=0;i<NUM_PREY;i++){
     let x,y;
     let tries=0;
@@ -240,10 +387,12 @@ function spawnSurvival(){
     const m = makeCreature(false);
     m.group.position.set(x,y,0);
     const heading=Math.random()*Math.PI*2;
-    prey.push({x,y,vx:0,vy:0,heading,wingPhase:Math.random()*6, alive:true, hidden:false, hideTimer:0, bushIdx:-1});
+    prey.push({x,y,vx:0,vy:0,heading,wingPhase:Math.random()*6, alive:true, hidden:false, hideTimer:0, bushIdx:-1, spawned:false});
     preyMeshes.push(m);
   }
+  totalSpawned=NUM_PREY;
   eaten=0; score=0; timeLeft=TOTAL_TIME; stamina=BAT_INITIAL_STAMINA;
+  waterSpawnTimer=3.2;
 }
 
 let whackFly = { x:0,y:0,vx:60,vy:40,heading:0,wingPhase:0 };
@@ -272,20 +421,22 @@ gameEl.addEventListener('touchmove', e=>{
 },{passive:true});
 
 function hudSurvival(){
-  fliesEl.textContent=`${eaten}/${NUM_PREY}`;
-  diffEl.textContent=`stamina ${stamina.toFixed(1)}s`;
+  const hidden = prey.filter(p=>p.alive&&p.hidden).length;
+  const alive = prey.filter(p=>p.alive).length;
+  fliesEl.textContent=`${eaten} eaten · ${alive} alive${hidden?` · ${hidden} hidden`:''} · ∞ from water`;
+  diffEl.textContent=`stamina ${stamina.toFixed(1)}s · water spawns`;
   diffEl.style.background = stamina<3 ? '#3a1a1a' : '#1e2a44';
   scEl.textContent=score;
   tmEl.textContent=timeLeft.toFixed(1);
   const pct = Math.max(0, Math.min(1, stamina/STAMINA_MAX))*100;
   staminaBar.style.width = pct+'%';
   staminaBar.classList.toggle('low', stamina<3);
-  // aggression HUD — grows as time runs out
   const timeFrac = 1 - timeLeft/TOTAL_TIME;
   const aggr = Math.min(100, timeFrac*100);
   if(aggressionFill) aggressionFill.style.width = aggr.toFixed(1)+'%';
-  // background goes aggressive after 60% time
   gameEl.classList.toggle('aggressive', timeFrac > 0.55);
+  const bStamEl=document.getElementById('b-stam');
+  if(bStamEl) bStamEl.textContent = stamina.toFixed(1)+'s · '+alive+' alive · total '+totalSpawned;
 }
 function hudWhack(){ scEl.textContent=score; fliesEl.textContent=`${hits}/${hitsNeeded}`; diffEl.textContent=diff.label; tmEl.textContent=timeLeft.toFixed(1); staminaBar.style.width='0%'; }
 
@@ -332,7 +483,7 @@ modeBtn.onclick = ()=>{
   mode = mode==='survival' ? 'whack' : 'survival';
   modeBtn.textContent = mode==='survival' ? 'Mode: Survival' : 'Mode: Whack';
   if(mode==='survival'){
-    card.innerHTML = `<h1>Bat vs Fly — Survival 🦇</h1><p><b>One fly mutates into a bat.</b> 12 flies remain. The bat's <em>real 668-neuron brain</em> drives it — watch on the right.</p><p style="font-size:13px;opacity:0.9">Eat <b>all 12 flies</b> in <b>60s</b>. Each fly = <b>+10s stamina</b>.</p><button id="play">Transform &amp; Hunt</button><p style="margin-top:10px;font-size:11px;opacity:.6">Brain: LIF 668 neurons · Prey flee · Stamina 10s · Predator AI</p>`;
+    card.innerHTML = `<h1>Bat vs Fly — Survival 🦇</h1><p><b>One fly mutates into a bat.</b> Flies spawn <b>infinitely from 3× 💧 WATER</b> — 12 at start.</p><p style="font-size:13px;opacity:0.9">Eat forever — each fly <b>+10s</b>, 60s, infinite. Bushes (3→trampled) + scent, 3 waters.</p><button id="play">Transform &amp; Hunt</button><p style="margin-top:10px;font-size:11px;opacity:.6">Brain: LIF 668 · 3 waters · Bushes+Pheromone+Sonar</p>`;
   } else {
     card.innerHTML = `<h1>Bat vs Fly 🦇🪰</h1><p>Your cursor <em>is</em> the bat. The fly's real 668-neuron brain sees your loom and escapes.</p><p style="font-size:13px">Tag it 10× before time runs out. Each level faster.</p><button id="play">Play Whack</button>`;
   }
@@ -391,6 +542,22 @@ function nearestBushAny(){
 // alias for old calls
 function nearestPrey(){ return nearestVisiblePrey(); }
 function tickSurvival(dt){
+  waterSpawnTimer -= dt;
+  if(playing && waters.length && waterSpawnTimer<=0){
+    const alive=prey.filter(p=>p.alive).length;
+    if(alive < 20){
+      spawnFlyFromWater();
+      const w=waters[Math.floor(Math.random()*waters.length)];
+      const bNear=bushes.reduce((a,b)=>{ const d=Math.hypot(b.x-w.x,b.y-w.y); return (!a||d<Math.hypot(a.x-w.x,a.y-w.y))?b:a; }, null);
+      if(bNear) bNear.pheromone=Math.min(1,bNear.pheromone+0.22);
+    }
+    const timeFrac=Math.max(0,1-timeLeft/TOTAL_TIME);
+    waterSpawnTimer = Math.max(1.0, 3.2 - timeFrac*1.2 - Math.min(eaten*0.04,1.0));
+  }
+  for(const w of waters){
+    w.group.rotation.z += dt*0.18 + Math.random()*0.02;
+    w.ring.material.opacity=0.28 + Math.sin(performance.now()*0.003 + w.x*0.01)*0.13;
+  }
   const np = nearestPrey();
   const target = np.prey;
   let loomL=0, loomR=0, air=0;
@@ -414,17 +581,16 @@ function tickSurvival(dt){
     loomL = loom*leftF; loomR=loom*rightF;
     air = dist<140 ? Math.min(1,(1.4 - dist/140)*0.95):0;
   } else {
-    // no visible prey — bat KNOWS to check bushes (systematic search)
-    // if any hidden flies exist, go to that bush; otherwise patrol all bushes
     let sb=nearestBushWithHidden();
-    if(!sb && bushes.length){
-      // no hidden left but still no visible prey — check nearest bush anyway (flies may be sneaking)
-      sb=nearestBushAny();
-      // cycle so bat doesn't get stuck: pick next-closest if already at nearest
+    if(!sb){
+      // no hidden known — follow pheromone scent or patrol
+      let bestP=null, bestV=-1;
+      for(const b of bushes){ if(b.pheromone>bestV && !b.trampled){ bestV=b.pheromone; bestP=b; }}
+      if(bestP && bestV>0.25) sb=bestP;
+      else sb=nearestBushAny();
       if(sb && Math.hypot(sb.x-bat.x,sb.y-bat.y) < 38){
-        // already at this bush, pick next
         let second=null, sd=Infinity;
-        for(const b of bushes){ if(b===sb) continue; const d=Math.hypot(b.x-bat.x,b.y-bat.y); if(d<sd){sd=d; second=b;}}
+        for(const b of bushes){ if(b===sb || b.trampled) continue; const d=Math.hypot(b.x-bat.x,b.y-bat.y); if(d<sd){sd=d; second=b;}}
         if(second) sb=second;
       }
     }
@@ -433,19 +599,23 @@ function tickSurvival(dt){
       const dBush=Math.hypot(predX-bat.x,predY-bat.y);
       const loomBase=Math.max(0,1-dBush/500)*0.60;
       loomL=loomBase*0.5; loomR=loomBase*0.5; air= dBush<60?0.4:0;
-      // visual cue: highlight searched bush
       sb.group.scale.set(1.06,1.06,1);
+      if(sb.pheromone>0.3) { sb.rim.material.opacity=0.45; }
     } else {
       predX=bat.x + Math.cos(bat.heading)*80; predY=bat.y + Math.sin(bat.heading)*80;
     }
   }
   // stamina + time modulate brain — aggressive as clock runs down
   const stamFrac = Math.max(0.35, stamina/STAMINA_MAX);
-  const timeFrac = Math.max(0, Math.min(1, 1 - timeLeft/TOTAL_TIME)); // 0 calm →1 frenzy
-  const aggression = 1 + timeFrac*0.95 + (stamina<4 ? (4-stamina)/4*0.45 : 0); // 1.0 → ~2.1
+  const timeFrac = Math.max(0, Math.min(1, 1 - timeLeft/TOTAL_TIME));
+  const aggression = 1 + timeFrac*0.95 + (stamina<4 ? (4-stamina)/4*0.45 : 0);
+  // sonar pulse when aggressive/searching
+  sonarTimer -= dt;
+  if(sonarTimer<=0 && (timeFrac>0.45 || !target)){
+    spawnSonar(bat.x, bat.y); sonarTimer= timeFrac>0.7 ? 0.55 : 1.1;
+  }
   sim.loomL=loomL; sim.loomR=loomR; sim.airPuff=air;
-  sim.activityScale = (0.95 * stamFrac + 0.65) + timeFrac*0.50; // noisier = more nervous when desperate
-  sim.sensoryGate = 1;
+  sim.activityScale = (0.95 * stamFrac + 0.65) + timeFrac*0.50;
   const ms=Math.max(1, Math.round(dt*1000));
   sim.step(ms);
   const s = signals.make(sim, dt);
@@ -549,19 +719,19 @@ function tickSurvival(dt){
       }
     }
     const dx=p.x-bat.x, dy=p.y-bat.y, d=Math.hypot(dx,dy);
-    // flies KNOW bushes — they memorise positions (white bg makes them visible) and prefer cover
+    // flies KNOW bushes — memorise positions, prefer cover; trampled bushes are ignored
     let nearestB=null, nd=Infinity, nbIdx=-1;
-    for(let bi=0;bi<bushes.length;bi++){ const b=bushes[bi]; const dd=Math.hypot(b.x-p.x,b.y-p.y); if(dd<nd){nd=dd; nearestB=b; nbIdx=bi;}}
-    const knowsBush = nearestB && nd < 220; // visual memory
-    // decide to flee to bush: bat anywhere within 250 if bush very close (<80), or 175 threat
+    for(let bi=0;bi<bushes.length;bi++){ const b=bushes[bi]; if(b.trampled) continue; const dd=Math.hypot(b.x-p.x,b.y-p.y); if(dd<nd){nd=dd; nearestB=b; nbIdx=bi;}}
+    const knowsBush = nearestB && nd < 220;
     const fleeToBush = nearestB && ((d < 175 && nd < 150) || (d < 280 && nd < 80) || (knowsBush && d < 220 && nd < 120));
     if(fleeToBush && nd < nearestB.radius*0.70){
-      // reached bush -> hide (knows it's safe)
       p.hidden=true; p.hideTimer=2.8 + Math.random()*3.2; p.bushIdx=nbIdx;
       p.x = nearestB.x + (Math.random()-0.5)*8; p.y = nearestB.y + (Math.random()-0.5)*8;
       m.group.visible=false;
-      nearestB.group.scale.set(1.14,1.14,1); setTimeout(()=>nearestB.group.scale.set(1,1,1),260);
-      // brief green flash for user to see knowledge
+      nearestB.uses++; nearestB.pheromone=Math.min(1, nearestB.pheromone+0.55);
+      addPheromone(nearestB.x, nearestB.y);
+      if(nearestB.uses>=3) trampleBush(nearestB);
+      else { nearestB.group.scale.set(1.14,1.14,1); setTimeout(()=>nearestB.group.scale.set(1,1,1),260); playSound('rustle'); spawnParticles(p.x,p.y,0x3a9d23,6); }
       const flash=m.detail?m.detail.abdomen?.material:null;
       if(flash && flash.emissive) { flash.emissive.setHex(0x2d6a4f); setTimeout(()=>flash.emissive.setHex(0),180); }
     } else if(fleeToBush){
@@ -620,25 +790,24 @@ function tickSurvival(dt){
       }
     }
   }
-  // eat check — larger radius for big bat
+  // eat check — larger bat needs larger radius
   for(let i=0;i<prey.length;i++){
     const p=prey[i]; if(!p.alive) continue;
     const d=Math.hypot(p.x-bat.x, p.y-bat.y);
-    if(d<34){
+    if(d<40){
       p.alive=false; preyMeshes[i].group.visible=false;
-      // pop effect: flash bat (traverse for detailed model)
       flashCreature(batMesh, 0x33ff88, 180);
+      spawnParticles(p.x,p.y,0xffd60a,14); spawnSonar(p.x,p.y); playSound('eat');
+      // disturb bush if eaten near one
+      const bIdx=bushAt(p.x,p.y); if(bIdx>=0) trampleBush(bushes[bIdx]);
       eaten++; score+=150;
-      stamina = STAMINA_MAX; // +10s
-      // small kick prey away? already eaten
-      if(eaten>=NUM_PREY){
-        playing=false; setCursorState();
-        center.style.display='grid';
-        card.innerHTML=`<h1>Hunt complete! 🏆</h1><p>Ate all ${NUM_PREY} flies in ${(TOTAL_TIME-timeLeft).toFixed(1)}s · Score ${score}</p><p style="font-size:12px;opacity:0.7">Bat brain drove every turn — 668 neurons, GF escapes, DNa steering.</p><button id="again">Hunt again</button> <button class="secondary" id="whackBtn">Whack mode</button>`;
-        document.getElementById('again').onclick=startSurvival;
-        const wb=document.getElementById('whackBtn'); if(wb) wb.onclick=()=>{mode='whack'; modeBtn.textContent='Mode: Whack'; startWhack();};
+      stamina = STAMINA_MAX;
+      // infinite — no win, keep spawning from water. Milestone flash every 12
+      if(eaten%12===0){
+        spawnParticles(bat.x,bat.y,0xffd60a,18); playSound('flush');
+        // brief score popup handled via HUD
       }
-      break; // one per tick
+      break;
     }
   }
   // update brain stats UI
@@ -777,10 +946,65 @@ function renderBrain(){
       bCtx.globalAlpha=1;
     }
   }
-  // overlay: total spikes text
   bCtx.fillStyle='rgba(255,255,255,0.7)';
   bCtx.font='10px system-ui';
-  bCtx.fillText(`sim ${now} ms · ${n} neurons`, 8, Hb-8);
+  bCtx.fillText(`sim ${now} ms · ${n} neurons — click to stimulate`, 8, Hb-8);
+  // hint: click stimulation
+  bCtx.fillStyle='rgba(110,168,254,0.55)';
+  bCtx.font='9px system-ui';
+  bCtx.fillText(`click brain → 22 neurons +0.45 for 120ms`, 8, Hb-20);
+}
+const miniMap=document.getElementById('miniMap');
+const mCtx= miniMap ? miniMap.getContext('2d') : null;
+function renderMiniMap(){
+  if(!mCtx) return;
+  const Wm=miniMap.width, Hm=miniMap.height;
+  mCtx.clearRect(0,0,Wm,Hm);
+  mCtx.fillStyle='#ffffff'; mCtx.fillRect(0,0,Wm,Hm);
+  // grid
+  mCtx.strokeStyle='#eef2f7'; mCtx.lineWidth=1;
+  for(let x=0;x<Wm;x+=33){ mCtx.beginPath(); mCtx.moveTo(x,0); mCtx.lineTo(x,Hm); mCtx.stroke(); }
+  for(let y=0;y<Hm;y+=30){ mCtx.beginPath(); mCtx.moveTo(0,y); mCtx.lineTo(Wm,y); mCtx.stroke(); }
+  // map world to minimap
+  const pad=8;
+  const viewW=camera.right-camera.left, viewH=camera.top-camera.bottom;
+  function wx(x){ return pad + (x-camera.left)/viewW*(Wm-pad*2); }
+  function wy(y){ return Hm-pad - (y-camera.bottom)/viewH*(Hm-pad*2); }
+  // waters — 3 sources
+  for(const w of waters){
+    const cx=wx(w.x), cy=wy(w.y), r=Math.max(7, w.radius/viewW*(Wm-pad*2)*0.88);
+    mCtx.beginPath(); mCtx.arc(cx,cy,r,0,Math.PI*2);
+    mCtx.fillStyle='#3b82f6'; mCtx.globalAlpha=0.22; mCtx.fill(); mCtx.globalAlpha=1;
+    mCtx.strokeStyle='#2563eb'; mCtx.lineWidth=1.2; mCtx.stroke();
+    mCtx.fillStyle='#60a5fa'; mCtx.beginPath(); mCtx.arc(cx,cy,r*0.60,0,Math.PI*2); mCtx.fill();
+    mCtx.fillStyle='#ffffff'; mCtx.font='6px system-ui'; mCtx.fillText('WATER', cx-12, cy+2);
+    const pulse=(Math.sin(performance.now()*0.004 + w.x*0.02)+1)/2;
+    mCtx.strokeStyle=`rgba(59,130,246,${0.12+pulse*0.22})`; mCtx.lineWidth=1.6; mCtx.beginPath(); mCtx.arc(cx,cy,r+4+pulse*3,0,Math.PI*2); mCtx.stroke();
+  }
+  // bushes
+  for(const b of bushes){
+    const cx=wx(b.x), cy=wy(b.y), r= Math.max(6, b.radius/viewW*(Wm-pad*2)*0.9);
+    mCtx.beginPath(); mCtx.arc(cx,cy,r,0,Math.PI*2);
+    mCtx.fillStyle= b.trampled ? '#8b7355' : (b.pheromone>0.25 ? '#4ade80' : '#2d6a4f');
+    mCtx.fill(); mCtx.strokeStyle= b.trampled?'#5c3a21':'#1a3a2a'; mCtx.lineWidth=1.2; mCtx.stroke();
+    if(b.pheromone>0.15){ mCtx.beginPath(); mCtx.arc(cx,cy,r+4,0,Math.PI*2); mCtx.strokeStyle=`rgba(74,222,128,${b.pheromone*0.6})`; mCtx.lineWidth=1; mCtx.stroke(); }
+    // hidden count
+    const hiddenIn=prey.filter(p=>p.alive&&p.hidden&&p.bushIdx===bushes.indexOf(b)).length;
+    if(hiddenIn){ mCtx.fillStyle='#eab308'; mCtx.beginPath(); mCtx.arc(cx,cy- r-5,4,0,Math.PI*2); mCtx.fill(); mCtx.fillStyle='#000'; mCtx.font='7px system-ui'; mCtx.fillText(String(hiddenIn), cx-3, cy- r-5 +2); }
+    if(b.trampled){ mCtx.fillStyle='rgba(0,0,0,0.55)'; mCtx.font='8px system-ui'; mCtx.fillText('×', cx-3, cy+3); }
+  }
+  // pheromone dots
+  for(const ph of pheromones){ const cx=wx(ph.x), cy=wy(ph.y); mCtx.fillStyle=`rgba(250,204,21,${ph.strength*0.55})`; mCtx.beginPath(); mCtx.arc(cx,cy,2.5,0,Math.PI*2); mCtx.fill(); }
+  // prey
+  for(let i=0;i<prey.length;i++){ const p=prey[i]; if(!p.alive) continue; const cx=wx(p.x), cy=wy(p.y); mCtx.fillStyle= p.hidden ? 'rgba(0,0,0,0)' : '#111827'; if(!p.hidden){ mCtx.beginPath(); mCtx.arc(cx,cy,3,0,Math.PI*2); mCtx.fill(); } }
+  // bat
+  const bx=wx(bat.x), by=wy(bat.y);
+  mCtx.fillStyle='#6d28d9'; mCtx.beginPath(); mCtx.arc(bx,by,5,0,Math.PI*2); mCtx.fill();
+  mCtx.strokeStyle='#fff'; mCtx.lineWidth=1.5; mCtx.stroke();
+  // heading line
+  mCtx.beginPath(); mCtx.moveTo(bx,by); mCtx.lineTo(bx+Math.cos(bat.heading)*10, by-Math.sin(bat.heading)*10); mCtx.strokeStyle='#6d28d9'; mCtx.lineWidth=1.2; mCtx.stroke();
+  // border
+  mCtx.strokeStyle='#cbd5e1'; mCtx.lineWidth=1.2; mCtx.strokeRect(pad,pad,Wm-pad*2,Hm-pad*2);
 }
 
 function loop(now){
@@ -790,7 +1014,7 @@ function loop(now){
     clock.advance(dt, fixed=>{
       tick(fixed);
       if(mode==='survival'){
-        stamina -= fixed; // 1:1 — 10s really is 10s
+        stamina -= fixed;
         timeLeft -= fixed;
         if(stamina<=0){ stamina=0; playing=false; setCursorState(); center.style.display='grid'; card.innerHTML=`<h1>Starved!</h1><p>Bat ran out of stamina — ate ${eaten}/${NUM_PREY} flies · Score ${score}</p><button id="again2">Try again</button>`; document.getElementById('again2').onclick=startSurvival; }
         else if(timeLeft<=0){ timeLeft=0; playing=false; setCursorState(); center.style.display='grid'; card.innerHTML=`<h1>Time!</h1><p>Ate ${eaten}/${NUM_PREY} flies · Score ${score}</p><button id="again2">Try again</button>`; document.getElementById('again2').onclick=startSurvival; }
@@ -805,7 +1029,9 @@ function loop(now){
     clock.advance(dt, fixed=>{ tick(fixed); });
     if(mode==='survival') hudSurvival(); else hudWhack();
   }
+  updateBushes(dt);
   renderBrain();
+  renderMiniMap();
   renderer.render(scene,camera);
 }
 if(mode==='survival'){ whackMesh.group.visible=false; hudSurvival(); } else { hudWhack(); }
