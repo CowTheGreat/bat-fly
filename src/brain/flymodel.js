@@ -12,9 +12,8 @@
 //   node.isHidden    -> !node.visible
 //   node.opacity     -> material.opacity (per-node material clones)
 
-// relative rather than bare so the same module resolves in Node (tests)
-// and in the renderer without an inline importmap
-import * as THREE from '../node_modules/three/build/three.module.js';
+// use bare specifier for vite bundling; tests still work via node_modules resolution
+import * as THREE from 'three';
 import { rnd, clampf, angleDiff, smoothstep, lag, TUNED_HZ } from './util.js';
 import { makeSignals } from './sim.js';
 import { LegDynamics, SixLegDynamics } from './legdynamics.js';

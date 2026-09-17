@@ -3,35 +3,126 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Bat vs Fly</title>
+  <title>Bat vs Fly — Survival</title>
   <style>
-    html,body{margin:0;height:100%;overflow:hidden;background:#0b0e14;color:#e6e6e6;font-family:system-ui,Segoe UI,Roboto,sans-serif;cursor:none}
-    #c{width:100%;height:100%;display:block}
-    #hud{position:fixed;left:12px;top:10px;right:12px;display:flex;justify-content:space-between;align-items:center;pointer-events:none;font-weight:600;text-shadow:0 1px 6px #000}
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;overflow:hidden;background:#0b0e14;color:#e6e6e6;font-family:system-ui,Segoe UI,Roboto,sans-serif}
+    #app{display:flex;height:100%;width:100%}
+    #game{flex:1;position:relative;overflow:hidden;cursor:auto; background:#ffffff}
+    #game::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:0.9;
+      background:
+        linear-gradient(#e5e7eb 1px, transparent 1px),
+        linear-gradient(90deg, #e5e7eb 1px, transparent 1px);
+      background-size:40px 40px;z-index:1}
+    #game.aggressive{background:#fff5f5}
+    #game.aggressive::before{opacity:0.9; background:
+        linear-gradient(#ffdddd 1px, transparent 1px),
+        linear-gradient(90deg, #ffdddd 1px, transparent 1px); background-size:40px 40px}
+    #game.whack-playing{cursor:none}
+    #game.whack-playing #bat{cursor:none}
+    #c{width:100%;height:100%;display:block;position:relative;z-index:2}
+    #arenaFrame{position:absolute;inset:14px;border:1.5px solid #cbd5e1; border-radius:12px; pointer-events:none; z-index:3; box-shadow: inset 0 0 0 1px #ffffff, 0 2px 12px #0001}
+    #game.aggressive #arenaFrame{border-color:#fca5a5; box-shadow: inset 0 0 0 1px #fff, 0 2px 16px #ff3b3026}
+    #aggressionHUD{position:absolute;left:12px;top:62px;right:380px;height:4px;background:#e5e7eb;border-radius:999px;overflow:hidden;z-index:5;opacity:0.9}
+    #aggressionFill{height:100%;width:0%;background:linear-gradient(90deg,#6ea8fe,#ff3b30);transition:width 0.15s linear}
+    #aggressionLabel{position:absolute;left:12px;top:70px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.55;z-index:5;color:#334155}
+    #hud{position:absolute;left:12px;top:10px;right:12px;display:flex;justify-content:space-between;align-items:center;pointer-events:none;font-weight:700;z-index:5;color:#0f172a;text-shadow:0 1px 0 #fff}
+    #hud .pill{background:#0f172a;color:#fff;border-color:#0f172a}
     #hud span{pointer-events:none}
-    #center{position:fixed;inset:0;display:grid;place-items:center;pointer-events:none}
-    #card{background:#141a26e6;border:1px solid #2a3550;border-radius:14px;padding:18px 20px;min-width:280px;box-shadow:0 10px 30px #0008;pointer-events:auto;text-align:center}
+    #center{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;z-index:10}
+    #card{background:#141a26e6;border:1px solid #2a3550;border-radius:14px;padding:18px 20px;min-width:320px;max-width:480px;box-shadow:0 10px 30px #0008;pointer-events:auto;text-align:center}
     #card h1{margin:0 0 6px;font-size:20px}
     #card p{margin:0 0 12px;opacity:.85;font-size:14px;line-height:1.4}
     button{appearance:none;border:0;background:#6ea8fe;color:#07101e;font-weight:700;padding:10px 16px;border-radius:10px;cursor:pointer}
     button:active{transform:translateY(1px)}
-    #bat{position:fixed;width:64px;height:64px;pointer-events:none;transform:translate(-50%,-50%);filter:drop-shadow(0 4px 10px #0008)}
+    button.secondary{background:#1e2a44;color:#c8d6f0;border:1px solid #2d3b5e}
+    #bat{position:absolute;width:64px;height:64px;pointer-events:none;transform:translate(-50%,-50%);filter:drop-shadow(0 4px 10px #0008);z-index:4;display:none}
     .pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#1e2a44;border:1px solid #2d3b5e;font-size:12px;margin-left:8px}
+    #staminaWrap{position:absolute;left:12px;top:46px;right:380px;height:10px;background:#1a2338;border:1px solid #2a3550;border-radius:999px;overflow:hidden;z-index:5}
+    #staminaBar{height:100%;width:100%;background:linear-gradient(90deg,#3dd68c,#ffb020);transition:width 0.08s linear}
+    #staminaBar.low{background:linear-gradient(90deg,#ff6b6b,#ffb020)}
+    /* Brain panel */
+    #brain-panel{width:360px;min-width:320px;background:#0f1420;border-left:1px solid #1e2a44;display:flex;flex-direction:column;overflow:hidden}
+    #brain-header{padding:12px 14px 8px;border-bottom:1px solid #1e2a44;background:#0f1420}
+    #brain-header h2{margin:0;font-size:13px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.9}
+    #brain-header p{margin:4px 0 0;font-size:11px;opacity:0.6;line-height:1.3}
+    #brain-canvas{width:100%;height:300px;display:block;background:#080a12;border-bottom:1px solid #1e2a44}
+    #brain-stats{padding:10px 14px;overflow:auto;flex:1}
+    .stat-row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid #1a2338}
+    .stat-row b{font-weight:700;color:#6ea8fe}
+    .bar{height:6px;background:#1a2338;border-radius:999px;overflow:hidden;margin-top:3px}
+    .bar-fill{height:100%;background:#6ea8fe;transition:width 0.1s linear}
+    .bar-fill.nervous{background:#ff6b6b}
+    .bar-fill.walk{background:#3dd68c}
+    .bar-fill.turn{background:#ffb020}
+    .legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+    .legend span{font-size:10px;padding:3px 7px;border-radius:999px;border:1px solid #2a3550;background:#141a26}
+    .legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
+    #modeToggle{position:absolute;right:374px;top:10px;z-index:6}
+    @media(max-width:900px){
+      #brain-panel{width:280px;min-width:260px}
+      #staminaWrap{right:292px}
+      #modeToggle{right:292px}
+    }
   </style>
 </head>
 <body>
-  <canvas id="c"></canvas>
-  <div id="bat" aria-hidden="true"><svg viewBox="0 0 64 64" width="64" height="64"><path d="M32 40c-6-6-14-8-20-6 3 5 8 9 14 11-1 3-2 6 6 8 8-2 7-5 6-8 6-2 11-6 14-11-6-2-14 0-20 6z" fill="#1a1a1a" stroke="#6ea8fe" stroke-width="1.2"/><circle cx="28" cy="36" r="2" fill="#ff6b6b"/><circle cx="36" cy="36" r="2" fill="#ff6b6b"/></svg></div>
-  <div id="hud">
-    <span>Level <b id="lv">1</b> <span class="pill" id="diff">easy</span> · Score <b id="sc">0</b> · Hits <b id="hits">0/10</b></span>
-    <span>Time <b id="tm">30.0</b>s</span>
+  <div id="app">
+    <div id="game">
+      <canvas id="c"></canvas>
+      <div id="arenaFrame"></div>
+      <div id="bat" aria-hidden="true"><svg viewBox="0 0 64 64" width="64" height="64"><path d="M32 40c-6-6-14-8-20-6 3 5 8 9 14 11-1 3-2 6 6 8 8-2 7-5 6-8 6-2 11-6 14-11-6-2-14 0-20 6z" fill="#1a1a1a" stroke="#6ea8fe" stroke-width="1.2"/><circle cx="28" cy="36" r="2" fill="#ff6b6b"/><circle cx="36" cy="36" r="2" fill="#ff6b6b"/></svg></div>
+      <div id="hud">
+        <span>Flies <b id="flies">0/12</b> <span class="pill" id="diff">stamina 5.0s</span> · Score <b id="sc">0</b></span>
+        <span>Time <b id="tm">60.0</b>s</span>
+      </div>
+      <div id="staminaWrap"><div id="staminaBar"></div></div>
+      <div id="aggressionHUD"><div id="aggressionFill"></div></div>
+      <div id="aggressionLabel">Aggression — calm → frenzy as time runs out</div>
+      <div id="modeToggle"><button class="secondary" id="modeBtn" style="font-size:12px;padding:6px 10px">Mode: Survival</button></div>
+      <div id="center"><div id="card">
+        <h1>Bat vs Fly — Survival 🦇</h1>
+        <p><b>One fly mutates into a bat.</b> 12 flies remain. The bat's <em>real 668-neuron brain</em> (FlyWire) drives it — you watch its brain on the right.</p>
+        <p style="font-size:13px;opacity:0.9">Bat must eat <b>all 12 flies</b> in <b>60 seconds</b>. Each fly gives <b>+10s stamina</b>. Stamina drains constantly — starve and you lose.</p>
+        <p style="font-size:12px;opacity:0.7">Prey flee from the bat. The bat hunts via looming + DNa steering. Right panel = live bat brain.</p>
+        <button id="play">Transform &amp; Hunt</button>
+        <p style="margin-top:10px;font-size:11px;opacity:.6">Data: FlyWire CC BY-NC 4.0, MaleCNS CC BY 4.0 · Code MIT · Brain: LIF 1kHz, 668 neurons</p>
+      </div></div>
+    </div>
+    <div id="brain-panel">
+      <div id="brain-header">
+        <h2>🦇 Bat Brain — 668 neurons</h2>
+        <p>Live LIF sim · only the bat (former fly) is shown. Dot = neuron, flash = spike. Colored by role.</p>
+      </div>
+      <canvas id="brain-canvas" width="360" height="300"></canvas>
+      <div id="brain-stats">
+        <div class="stat-row"><span>Spikes /s (pop)</span> <b id="b-rate">0 Hz</b></div>
+        <div class="bar"><div id="b-rate-bar" class="bar-fill" style="width:0%"></div></div>
+        <div class="stat-row"><span>Walk drive (DNp09)</span> <b id="b-walk">0.00</b></div>
+        <div class="bar"><div id="b-walk-bar" class="bar-fill walk" style="width:0%"></div></div>
+        <div class="stat-row"><span>Nervous (loom LC4/LPLC2)</span> <b id="b-nerv">0.00</b></div>
+        <div class="bar"><div id="b-nerv-bar" class="bar-fill nervous" style="width:0%"></div></div>
+        <div class="stat-row"><span>Turn bias (DNa01/02)</span> <b id="b-turn">0.00</b></div>
+        <div class="bar"><div id="b-turn-bar" class="bar-fill turn" style="width:0%"></div></div>
+        <div class="stat-row"><span>Wing drive</span> <b id="b-wing">0.00</b></div>
+        <div class="stat-row"><span>Escape (GF)</span> <b id="b-esc" style="color:#ff6b6b">—</b></div>
+        <div class="stat-row"><span>Bat heading</span> <b id="b-hd">0°</b></div>
+        <div class="stat-row"><span>Bat speed</span> <b id="b-spd">0</b></div>
+        <div class="stat-row"><span>Stamina</span> <b id="b-stam">5.0s</b></div>
+        <div class="stat-row"><span>Nearest prey</span> <b id="b-prey">—</b></div>
+        <div class="legend">
+          <span><i style="background:#3dd68c"></i>lc4/lplc2</span>
+          <span><i style="background:#ff4d4d"></i>GF</span>
+          <span><i style="background:#6ea8fe"></i>DNa L/R</span>
+          <span><i style="background:#ffb020"></i>MDN</span>
+          <span><i style="background:#b794f6"></i>DNp09/esc</span>
+          <span><i style="background:#8a8a8a"></i>other</span>
+          <span><i style="background:#fff;box-shadow:0 0 6px #fff"></i>spike</span>
+        </div>
+        <p style="font-size:11px;opacity:0.6;margin-top:8px">Movement decoded from <code>rateDNaL/R</code>, <code>rateFwd</code>, <code>GF latch</code>. Loom = distance to prey. VNC not shown.</p>
+      </div>
+    </div>
   </div>
-  <div id="center"><div id="card">
-    <h1>Bat vs Fly 🦇🪰</h1>
-    <p>Your cursor <em>is</em> the bat. No clicking — get close and the fly's real 668-neuron brain (FlyWire + MaleCNS) sees your loom and escapes. Tag it 10 times before time runs out. Each level the fly gets faster & more nervous.</p>
-    <button id="play">Play</button>
-    <p style="margin-top:10px;font-size:12px;opacity:.7">Data: FlyWire CC BY-NC 4.0, MaleCNS CC BY 4.0 · Code MIT</p>
-  </div></div>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
