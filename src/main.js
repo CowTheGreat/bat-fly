@@ -150,10 +150,13 @@ let totalSpikesSeen = 0;
 // Game state
 let mode = 'survival'; // 'survival' | 'whack'
 const NUM_PREY = 12, TOTAL_TIME = 60, STAMINA_MAX = 10;
-const BAT_INITIAL_STAMINA = 10; // 10s per fly as requested — no extra grace needed now
+const BAT_INITIAL_STAMINA = 10;
+const BUSH_COUNT = 5, BUSH_RADIUS = 52;
 let bat = { x:0,y:0,vx:0,vy:0,heading:0,wingPhase:0, speed:0 };
-let prey = []; // {x,y,vx,vy,heading,wingPhase,alive, mesh}
+let prey = []; // {x,y,vx,vy,heading,wingPhase,alive,hidden,hideTimer,bushIdx}
 let batMesh, preyMeshes=[];
+let bushes = []; // {x,y,radius, group, foliage:[]}
+let bushMeshes = [];
 let score=0, eaten=0, timeLeft=TOTAL_TIME, stamina=STAMINA_MAX, playing=false, last=performance.now();
 let hits=0, hitsNeeded=10, level=1; // for whack mode
 let mouse = {x:0,y:0, px:0,py:0, vx:0, vy:0};
@@ -167,6 +170,51 @@ function applyDiff(){ diff=difficultyFor(level); }
 
 function resetWhackFly(f){ f.x=(Math.random()*0.6-0.3)*(camera.right-camera.left); f.y=(Math.random()*0.6-0.3)*(camera.top-camera.bottom); f.vx=(Math.random()<0.5?1:-1)*diff.speed*0.6; f.vy=(Math.random()<0.5?1:-1)*diff.speed*0.6; }
 
+function makeBush(x,y,r){
+  const g=new THREE.Group();
+  // trunk
+  const trunk=new THREE.Mesh(new THREE.CylinderGeometry(5,7,14,8), new THREE.MeshStandardMaterial({color:0x5c3a21, roughness:0.9}));
+  trunk.position.set(0,0,-6); trunk.rotation.x=Math.PI/2;
+  g.add(trunk);
+  // foliage — 3 overlapping spheres + smaller tufts, green on white bg highly visible
+  const greens=[0x2d6a4f,0x3a9d23,0x40916c,0x2b7a3b];
+  const offsets=[[0,0],[ -14,8],[14,7],[0,14],[-10,-10],[10,-9]];
+  const scales=[1,0.85,0.82,0.75,0.7,0.65];
+  for(let i=0;i<offsets.length;i++){
+    const s=new THREE.Mesh(new THREE.SphereGeometry(r*0.62*scales[i],14,10), new THREE.MeshStandardMaterial({color:greens[i%greens.length], roughness:0.85}));
+    s.position.set(offsets[i][0]*0.45, offsets[i][1]*0.45, 3 + Math.random()*2);
+    s.scale.set(1,1,0.55);
+    g.add(s);
+  }
+  // rim highlight
+  const rim=new THREE.Mesh(new THREE.RingGeometry(r*0.95, r*1.05, 24), new THREE.MeshBasicMaterial({color:0x95d5b2, transparent:true, opacity:0.25, side:THREE.DoubleSide}));
+  rim.position.set(0,0,0.1);
+  g.add(rim);
+  g.position.set(x,y, -0.5);
+  scene.add(g);
+  return {x,y,radius:r, group:g};
+}
+function clearBushes(){
+  for(const b of bushMeshes) scene.remove(b.group);
+  bushMeshes=[]; bushes=[];
+}
+function spawnBushes(){
+  clearBushes();
+  const margin=70;
+  const L=camera.left+margin, R=camera.right-margin, B=camera.bottom+margin, T=camera.top-margin;
+  for(let i=0;i<BUSH_COUNT;i++){
+    let x,y,tries=0;
+    do{
+      x= (Math.random()*0.8-0.4)*(R-L) *0.5;
+      y= (Math.random()*0.8-0.4)*(T-B) *0.5;
+      tries++;
+      // avoid stacking bushes too close
+      if(bushes.every(b=> Math.hypot(b.x-x,b.y-y) > BUSH_RADIUS*2.2)) break;
+    }while(tries<40);
+    const b=makeBush(x,y,BUSH_RADIUS);
+    bushes.push(b); bushMeshes.push(b);
+  }
+}
 // survival setup
 function clearCreatures(){
   for(const m of preyMeshes) scene.remove(m.group);
@@ -175,8 +223,8 @@ function clearCreatures(){
 }
 function spawnSurvival(){
   clearCreatures();
+  spawnBushes();
   batMesh = makeCreature(true);
-  // bat start near center
   bat = { x:(Math.random()-0.5)*100, y:(Math.random()-0.5)*100, vx:0, vy:0, heading: Math.random()*Math.PI*2, wingPhase:0, speed:0 };
   batMesh.group.position.set(bat.x,bat.y,0);
   prey=[];
@@ -192,7 +240,7 @@ function spawnSurvival(){
     const m = makeCreature(false);
     m.group.position.set(x,y,0);
     const heading=Math.random()*Math.PI*2;
-    prey.push({x,y,vx:0,vy:0,heading,wingPhase:Math.random()*6, alive:true});
+    prey.push({x,y,vx:0,vy:0,heading,wingPhase:Math.random()*6, alive:true, hidden:false, hideTimer:0, bushIdx:-1});
     preyMeshes.push(m);
   }
   eaten=0; score=0; timeLeft=TOTAL_TIME; stamina=BAT_INITIAL_STAMINA;
@@ -268,7 +316,7 @@ function startSurvival(){
 }
 function startWhack(){
   mode='whack'; level=1; hits=0; score=0; timeLeft=30; playing=true; applyDiff();
-  clearCreatures();
+  clearCreatures(); clearBushes();
   whackMesh.group.visible=true;
   resetWhack(); hudWhack();
   center.style.display='none';
@@ -300,12 +348,48 @@ whackMesh.group.visible=false;
 gameEl.addEventListener('mouseenter', ()=>{ if(mode==='whack' && playing) batCursorEl.style.display='block'; });
 gameEl.addEventListener('mouseleave', ()=>{ if(mode==='whack' && playing) batCursorEl.style.display='none'; });
 
-// Survival tick
-function nearestPrey(){
+function bushAt(x,y){
+  for(let i=0;i<bushes.length;i++) if(Math.hypot(x-bushes[i].x, y-bushes[i].y) < bushes[i].radius) return i;
+  return -1;
+}
+function nearestVisiblePrey(){
   let best=null, bestD=Infinity, bestI=-1;
-  for(let i=0;i<prey.length;i++){ if(!prey[i].alive) continue; const d=Math.hypot(prey[i].x-bat.x, prey[i].y-bat.y); if(d<bestD){bestD=d; best=prey[i]; bestI=i;}}
+  for(let i=0;i<prey.length;i++){
+    const p=prey[i]; if(!p.alive) continue;
+    // hidden flies are invisible unless bat is searching that bush
+    if(p.hidden){
+      const batInBush = bushAt(bat.x,bat.y);
+      const preyBush = p.bushIdx;
+      // visible only if bat is inside same bush or very close to it (<60) or within 45 of prey
+      const dBatPrey = Math.hypot(p.x-bat.x, p.y-bat.y);
+      const dBatBush = preyBush>=0 ? Math.hypot(bat.x-bushes[preyBush].x, bat.y-bushes[preyBush].y) : Infinity;
+      if(batInBush !== preyBush && dBatPrey > 55 && dBatBush > 65) continue;
+    }
+    const d=Math.hypot(p.x-bat.x, p.y-bat.y);
+    if(d<bestD){bestD=d; best=p; bestI=i;}
+  }
   return { prey:best, dist:bestD, idx:bestI };
 }
+function nearestBushWithHidden(){
+  let best=null,bestD=Infinity;
+  for(const b of bushes){
+    const has = prey.some(p=> p.alive && p.hidden && p.bushIdx===bushes.indexOf(b));
+    if(!has) continue;
+    const d=Math.hypot(b.x-bat.x,b.y-bat.y);
+    if(d<bestD){bestD=d; best=b;}
+  }
+  return best;
+}
+function nearestBushAny(){
+  let best=null,bestD=Infinity;
+  for(const b of bushes){
+    const d=Math.hypot(b.x-bat.x,b.y-bat.y);
+    if(d<bestD){bestD=d; best=b;}
+  }
+  return best;
+}
+// alias for old calls
+function nearestPrey(){ return nearestVisiblePrey(); }
 function tickSurvival(dt){
   const np = nearestPrey();
   const target = np.prey;
@@ -314,10 +398,9 @@ function tickSurvival(dt){
   // predictive intercept — lead the prey based on its velocity
   let predX = target ? target.x : 0, predY = target ? target.y : 0;
   if(target){
-    const lead = Math.min(0.35, np.dist / 700); // ~0.15-0.35s ahead
+    const lead = Math.min(0.35, np.dist / 700);
     predX = target.x + (target.vx||0)*lead;
     predY = target.y + (target.vy||0)*lead;
-    // clamp predicted point inside arena
     predX = Math.max(camera.left+24, Math.min(camera.right-24, predX));
     predY = Math.max(camera.bottom+24, Math.min(camera.top-24, predY));
     const dx=predX-bat.x, dy=predY-bat.y;
@@ -330,6 +413,31 @@ function tickSurvival(dt){
     const loom = Math.min(1, loomBase * 1.4);
     loomL = loom*leftF; loomR=loom*rightF;
     air = dist<140 ? Math.min(1,(1.4 - dist/140)*0.95):0;
+  } else {
+    // no visible prey — bat KNOWS to check bushes (systematic search)
+    // if any hidden flies exist, go to that bush; otherwise patrol all bushes
+    let sb=nearestBushWithHidden();
+    if(!sb && bushes.length){
+      // no hidden left but still no visible prey — check nearest bush anyway (flies may be sneaking)
+      sb=nearestBushAny();
+      // cycle so bat doesn't get stuck: pick next-closest if already at nearest
+      if(sb && Math.hypot(sb.x-bat.x,sb.y-bat.y) < 38){
+        // already at this bush, pick next
+        let second=null, sd=Infinity;
+        for(const b of bushes){ if(b===sb) continue; const d=Math.hypot(b.x-bat.x,b.y-bat.y); if(d<sd){sd=d; second=b;}}
+        if(second) sb=second;
+      }
+    }
+    if(sb){
+      predX=sb.x; predY=sb.y; huntAngle=Math.atan2(predY-bat.y, predX-bat.x);
+      const dBush=Math.hypot(predX-bat.x,predY-bat.y);
+      const loomBase=Math.max(0,1-dBush/500)*0.60;
+      loomL=loomBase*0.5; loomR=loomBase*0.5; air= dBush<60?0.4:0;
+      // visual cue: highlight searched bush
+      sb.group.scale.set(1.06,1.06,1);
+    } else {
+      predX=bat.x + Math.cos(bat.heading)*80; predY=bat.y + Math.sin(bat.heading)*80;
+    }
   }
   // stamina + time modulate brain — aggressive as clock runs down
   const stamFrac = Math.max(0.35, stamina/STAMINA_MAX);
@@ -410,13 +518,59 @@ function tickSurvival(dt){
   }
   bat.speed = Math.hypot(bat.vx,bat.vy);
 
-  // prey update: flee from bat — SLOWER than bat so bat can catch
+  // prey update: flee + hide in bushes
   for(let i=0;i<prey.length;i++){
     const p=prey[i]; if(!p.alive) continue;
     const m=preyMeshes[i];
+    // hidden prey — stay invisible inside bush, countdown, then emerge
+    if(p.hidden){
+      p.hideTimer -= dt;
+      const b=bushes[p.bushIdx];
+      // gentle jiggle inside foliage
+      p.x = b.x + Math.sin(p.wingPhase*0.7)*6;
+      p.y = b.y + Math.cos(p.wingPhase*0.9)*5;
+      m.group.position.set(p.x,p.y,0);
+      const dBatPrey=Math.hypot(p.x-bat.x,p.y-bat.y);
+      const dBatBush=Math.hypot(bat.x-b.x, bat.y-b.y);
+      // bat searches bush -> flush out, or timer expires and bat is far -> sneak out
+      if(dBatPrey < 40 || dBatBush < b.radius*0.9 || (p.hideTimer<=0 && dBatPrey>90)){
+        p.hidden=false; p.bushIdx=-1; p.hideTimer=0;
+        m.group.visible=true; m.group.scale.set(1,1,1);
+        const away=Math.atan2(p.y-bat.y,p.x-bat.x);
+        p.heading=away; p.vx=Math.cos(away)*140; p.vy=Math.sin(away)*140;
+        p.x += Math.cos(away)*20; p.y += Math.sin(away)*20;
+      } else {
+        m.group.visible=false;
+        p.wingPhase += dt*18;
+        // pulse bush foliage slightly to hint something is inside
+        const pulse=1+Math.sin(performance.now()*0.004 + p.bushIdx)*0.07;
+        b.group.scale.set(pulse,pulse,1);
+        continue;
+      }
+    }
     const dx=p.x-bat.x, dy=p.y-bat.y, d=Math.hypot(dx,dy);
-    if(d<150){
-      // flee — reduced speed (prey is food, not elite)
+    // flies KNOW bushes — they memorise positions (white bg makes them visible) and prefer cover
+    let nearestB=null, nd=Infinity, nbIdx=-1;
+    for(let bi=0;bi<bushes.length;bi++){ const b=bushes[bi]; const dd=Math.hypot(b.x-p.x,b.y-p.y); if(dd<nd){nd=dd; nearestB=b; nbIdx=bi;}}
+    const knowsBush = nearestB && nd < 220; // visual memory
+    // decide to flee to bush: bat anywhere within 250 if bush very close (<80), or 175 threat
+    const fleeToBush = nearestB && ((d < 175 && nd < 150) || (d < 280 && nd < 80) || (knowsBush && d < 220 && nd < 120));
+    if(fleeToBush && nd < nearestB.radius*0.70){
+      // reached bush -> hide (knows it's safe)
+      p.hidden=true; p.hideTimer=2.8 + Math.random()*3.2; p.bushIdx=nbIdx;
+      p.x = nearestB.x + (Math.random()-0.5)*8; p.y = nearestB.y + (Math.random()-0.5)*8;
+      m.group.visible=false;
+      nearestB.group.scale.set(1.14,1.14,1); setTimeout(()=>nearestB.group.scale.set(1,1,1),260);
+      // brief green flash for user to see knowledge
+      const flash=m.detail?m.detail.abdomen?.material:null;
+      if(flash && flash.emissive) { flash.emissive.setHex(0x2d6a4f); setTimeout(()=>flash.emissive.setHex(0),180); }
+    } else if(fleeToBush){
+      const toBush=Math.atan2(nearestB.y-p.y, nearestB.x-p.x);
+      let diffR=toBush-p.heading; while(diffR>Math.PI) diffR-=2*Math.PI; while(diffR<-Math.PI) diffR+=2*Math.PI;
+      p.heading += diffR*Math.min(1,6.0*dt);
+      const fleeSpeed=112 + (175-Math.min(d,175))*0.60;
+      p.vx=Math.cos(p.heading)*fleeSpeed; p.vy=Math.sin(p.heading)*fleeSpeed;
+    } else if(d<150){
       const away=Math.atan2(dy,dx);
       const fleeSpeed=95 + (150-d)*0.45 + Math.random()*14;
       p.heading += (away - p.heading)*Math.min(1, 4.5*dt);
@@ -424,31 +578,46 @@ function tickSurvival(dt){
       p.vx = Math.cos(p.heading)*fleeSpeed;
       p.vy = Math.sin(p.heading)*fleeSpeed;
     } else {
-      // wander
-      p.heading += (Math.random()-0.5)*1.2*dt;
-      const wanderSpd = 38 + Math.random()*16;
-      p.vx += (Math.cos(p.heading)*wanderSpd - p.vx)*Math.min(1,2.5*dt);
-      p.vy += (Math.sin(p.heading)*wanderSpd - p.vy)*Math.min(1,2.5*dt);
+      // idle: loiter near bushes — flies KNOW cover and stay close even without threat
+      if(knowsBush && nd < 110){
+        const toBush=Math.atan2(nearestB.y-p.y, nearestB.x-p.x);
+        let diffR=toBush-p.heading; while(diffR>Math.PI) diffR-=2*Math.PI; while(diffR<-Math.PI) diffR+=2*Math.PI;
+        p.heading += diffR*Math.min(1,1.2*dt) + (Math.random()-0.5)*0.6*dt;
+        const loiterSpd=30 + Math.random()*10;
+        p.vx += (Math.cos(p.heading)*loiterSpd - p.vx)*Math.min(1,1.8*dt);
+        p.vy += (Math.sin(p.heading)*loiterSpd - p.vy)*Math.min(1,1.8*dt);
+      } else {
+        p.heading += (Math.random()-0.5)*1.0*dt;
+        const wanderSpd = 34 + Math.random()*14;
+        p.vx += (Math.cos(p.heading)*wanderSpd - p.vx)*Math.min(1,2.2*dt);
+        p.vy += (Math.sin(p.heading)*wanderSpd - p.vy)*Math.min(1,2.2*dt);
+        // occasional exploratory dash toward a random bush
+        if(Math.random()<0.008 && nearestB && nd<200){
+          p.heading = Math.atan2(nearestB.y-p.y, nearestB.x-p.x) + (Math.random()-0.5)*0.3;
+        }
+      }
     }
-    // wall
+    // wall (prey)
     if(p.x<Ls){ p.x=Ls; p.vx=Math.abs(p.vx); p.heading=0; }
     if(p.x>Rs){ p.x=Rs; p.vx=-Math.abs(p.vx); p.heading=Math.PI; }
     if(p.y<Bs){ p.y=Bs; p.vy=Math.abs(p.vy); }
     if(p.y>Ts){ p.y=Ts; p.vy=-Math.abs(p.vy); }
-    p.x += p.vx*dt; p.y += p.vy*dt;
-    p.heading = Math.atan2(p.vy,p.vx);
-    m.group.position.set(p.x,p.y,0);
-    m.group.rotation.z=p.heading;
-    p.wingPhase += dt*26;
-    if(m.detail){
-      const stroke = Math.sin(p.wingPhase*1.8);
-      m.detail.foldedWings.children.forEach((wing, idx)=>{
-        const side = idx===0? -1:1;
-        wing.rotation.z = side * (0.32 + 0.22*stroke);
-      });
-    } else {
-      m.wingL.rotation.z = 0.28 + Math.sin(p.wingPhase)*0.9;
-      m.wingR.rotation.z = -0.28 - Math.sin(p.wingPhase)*0.9;
+    if(!p.hidden){
+      p.x += p.vx*dt; p.y += p.vy*dt;
+      p.heading = Math.atan2(p.vy,p.vx);
+      m.group.position.set(p.x,p.y,0);
+      m.group.rotation.z=p.heading;
+      p.wingPhase += dt*26;
+      if(m.detail){
+        const stroke = Math.sin(p.wingPhase*1.8);
+        m.detail.foldedWings.children.forEach((wing, idx)=>{
+          const side = idx===0? -1:1;
+          wing.rotation.z = side * (0.32 + 0.22*stroke);
+        });
+      } else {
+        m.wingL.rotation.z = 0.28 + Math.sin(p.wingPhase)*0.9;
+        m.wingR.rotation.z = -0.28 - Math.sin(p.wingPhase)*0.9;
+      }
     }
   }
   // eat check — larger radius for big bat
