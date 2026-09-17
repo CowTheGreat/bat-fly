@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bat vs Fly</title>
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#0b0e14;color:#e6e6e6;font-family:system-ui,Segoe UI,Roboto,sans-serif;cursor:none}
+    #c{width:100%;height:100%;display:block}
+    #hud{position:fixed;left:12px;top:10px;right:12px;display:flex;justify-content:space-between;align-items:center;pointer-events:none;font-weight:600;text-shadow:0 1px 6px #000}
+    #hud span{pointer-events:none}
+    #center{position:fixed;inset:0;display:grid;place-items:center;pointer-events:none}
+    #card{background:#141a26e6;border:1px solid #2a3550;border-radius:14px;padding:18px 20px;min-width:280px;box-shadow:0 10px 30px #0008;pointer-events:auto;text-align:center}
+    #card h1{margin:0 0 6px;font-size:20px}
+    #card p{margin:0 0 12px;opacity:.85;font-size:14px;line-height:1.4}
+    button{appearance:none;border:0;background:#6ea8fe;color:#07101e;font-weight:700;padding:10px 16px;border-radius:10px;cursor:pointer}
+    button:active{transform:translateY(1px)}
+    #bat{position:fixed;width:64px;height:64px;pointer-events:none;transform:translate(-50%,-50%);filter:drop-shadow(0 4px 10px #0008)}
+    .pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#1e2a44;border:1px solid #2d3b5e;font-size:12px;margin-left:8px}
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="bat" aria-hidden="true"><svg viewBox="0 0 64 64" width="64" height="64"><path d="M32 40c-6-6-14-8-20-6 3 5 8 9 14 11-1 3-2 6 6 8 8-2 7-5 6-8 6-2 11-6 14-11-6-2-14 0-20 6z" fill="#1a1a1a" stroke="#6ea8fe" stroke-width="1.2"/><circle cx="28" cy="36" r="2" fill="#ff6b6b"/><circle cx="36" cy="36" r="2" fill="#ff6b6b"/></svg></div>
+  <div id="hud">
+    <span>Level <b id="lv">1</b> <span class="pill" id="diff">easy</span> · Score <b id="sc">0</b> · Hits <b id="hits">0/10</b></span>
+    <span>Time <b id="tm">30.0</b>s</span>
+  </div>
+  <div id="center"><div id="card">
+    <h1>Bat vs Fly 🦇🪰</h1>
+    <p>Your cursor <em>is</em> the bat. No clicking — get close and the fly's real 668-neuron brain (FlyWire + MaleCNS) sees your loom and escapes. Tag it 10 times before time runs out. Each level the fly gets faster & more nervous.</p>
+    <button id="play">Play</button>
+    <p style="margin-top:10px;font-size:12px;opacity:.7">Data: FlyWire CC BY-NC 4.0, MaleCNS CC BY 4.0 · Code MIT</p>
+  </div></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
